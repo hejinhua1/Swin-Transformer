@@ -509,21 +509,22 @@ class SwinTransformer(nn.Module):
         fused_window_process (bool, optional): If True, use one kernel to fused window shift & window partition for acceleration, similar for the reversed part. Default: False
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
-                 embed_dim=96, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
-                 window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+    def __init__(self, img_size=32, patch_size=2, in_chans=78, out_size=32,
+                 embed_dim=78*4, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
+                 window_size=4, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, fused_window_process=False, **kwargs):
         super().__init__()
 
-        self.num_classes = num_classes
+        self.out_size = out_size
         self.num_layers = len(depths)
         self.embed_dim = embed_dim
         self.ape = ape
         self.patch_norm = patch_norm
         self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
         self.mlp_ratio = mlp_ratio
+        self.mlp_H_features = int(img_size/(2**(self.num_layers-1)))
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
@@ -564,8 +565,8 @@ class SwinTransformer(nn.Module):
 
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
-
+        self.head_W = nn.Linear(self.num_features, out_size) if out_size > 0 else nn.Identity()
+        self.head_H = nn.Linear(self.mlp_H_features, out_size) if out_size > 0 else nn.Identity()
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -585,7 +586,7 @@ class SwinTransformer(nn.Module):
     def no_weight_decay_keywords(self):
         return {'relative_position_bias_table'}
 
-    def forward_features(self, x):
+    def forward(self, x):
         x = self.patch_embed(x)
         if self.ape:
             x = x + self.absolute_pos_embed
@@ -594,14 +595,9 @@ class SwinTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
 
-        x = self.norm(x)  # B L C
-        x = self.avgpool(x.transpose(1, 2))  # B C 1
-        x = torch.flatten(x, 1)
-        return x
-
-    def forward(self, x):
-        x = self.forward_features(x)
-        x = self.head(x)
+        x = self.head_W(x)
+        x = x.transpose(1, 2)
+        x = self.head_H(x)
         return x
 
     def flops(self):
@@ -612,3 +608,14 @@ class SwinTransformer(nn.Module):
         flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
         flops += self.num_features * self.num_classes
         return flops
+
+if __name__ == '__main__':
+    model = SwinTransformer(img_size=32, patch_size=2, in_chans=78, out_size=32,
+                 embed_dim=78*4, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
+                 window_size=4, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
+                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
+                 use_checkpoint=False, fused_window_process=False)
+    x = torch.randn(16, 78, 32, 32)
+    y = model(x)
+    print(y.shape)
